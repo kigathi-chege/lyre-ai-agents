@@ -8,12 +8,11 @@
   "author": "Britam Trust Services / Lyre",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kigathi-chege/lyre-packages.git",
-    "directory": "packages/ai-agents"
+    "url": "git+https://github.com/kigathi-chege/lyre-ai-agents.git"
   },
-  "homepage": "https://github.com/kigathi-chege/lyre-packages/tree/main/packages/ai-agents#readme",
+  "homepage": "https://github.com/kigathi-chege/lyre-ai-agents#readme",
   "bugs": {
-    "url": "https://github.com/kigathi-chege/lyre-packages/issues"
+    "url": "https://github.com/kigathi-chege/lyre-ai-agents/issues"
   },
   "keywords": [
     "ai",

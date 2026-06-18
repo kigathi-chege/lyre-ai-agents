@@ -41,7 +41,7 @@ On npmjs.com, open **Settings → Trusted publishers → Add publisher**:
 
 - **Publisher**: GitHub Actions
 - **Organization or user**: `kigathi-chege`
-- **Repository**: `ai-agents`
+- **Repository**: `lyre-ai-agents`
 - **Workflow filename**: `publish.yml`
 - **Environment name**: `Home`
 
