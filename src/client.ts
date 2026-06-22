@@ -3,6 +3,7 @@ import { run, runObject, runStream } from './run';
 import type {
 	Agent,
 	AgentDefinition,
+	ClientDefaults,
 	RunParams,
 	RunObjectParams,
 	RunObjectResult,
@@ -17,9 +18,11 @@ import type {
  */
 export class AiAgentsClient {
 	private readonly registry: Registry;
+	private readonly defaults: ClientDefaults;
 
-	constructor() {
+	constructor(config?: ClientDefaults) {
 		this.registry = new Registry();
+		this.defaults = { apiKey: config?.apiKey, model: config?.model };
 	}
 
 	registerTool<I, O>(tool: ToolDefinition<I, O>): ToolDefinition<I, O> {
@@ -31,11 +34,11 @@ export class AiAgentsClient {
 	}
 
 	async run(params: RunParams): Promise<RunResult> {
-		return run(this.registry, params);
+		return run(this.registry, params, this.defaults);
 	}
 
 	runStream(params: RunParams): AsyncGenerator<StreamEvent, void, unknown> {
-		return runStream(this.registry, params);
+		return runStream(this.registry, params, this.defaults);
 	}
 
 	/**
@@ -43,7 +46,7 @@ export class AiAgentsClient {
 	 * instead of free text. Single-shot (no tools). Added in 0.2.0.
 	 */
 	async runObject<T>(params: RunObjectParams<T>): Promise<RunObjectResult<T>> {
-		return runObject<T>(this.registry, params);
+		return runObject<T>(this.registry, params, this.defaults);
 	}
 
 	/** Direct access to the underlying registry for advanced introspection. */
@@ -53,10 +56,11 @@ export class AiAgentsClient {
 }
 
 /**
- * Factory. Provider auth comes from environment variables. To explicitly configure
- * provider clients (e.g., for testing), pass `LanguageModel` instances to
- * `createAgent({ model })` instead of string identifiers.
+ * Factory. Pass a single generic `{ apiKey, model }` and the package constructs whichever
+ * provider the model's `provider/` prefix names — so apps never import `@ai-sdk/*`. Omit the
+ * config to fall back to the Vercel AI SDK's own env-var/gateway resolution, or pass a
+ * `LanguageModel` instance via `createAgent({ model })` for fully custom wiring.
  */
-export function createClient(): AiAgentsClient {
-	return new AiAgentsClient();
+export function createClient(config?: ClientDefaults): AiAgentsClient {
+	return new AiAgentsClient(config);
 }

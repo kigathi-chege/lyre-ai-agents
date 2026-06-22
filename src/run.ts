@@ -2,6 +2,7 @@
 import { generateObject, generateText, streamText, tool, type ModelMessage, type Tool } from 'ai';
 import type { Registry } from './agents';
 import type {
+	ClientDefaults,
 	Message,
 	RunParams,
 	RunObjectParams,
@@ -11,11 +12,15 @@ import type {
 	Agent,
 	ToolDefinition
 } from './types';
+import { resolveModelString } from './providers';
 
-function resolveModel(agent: Agent) {
-	// The AI SDK accepts either provider strings or LanguageModel instances at runtime.
-	// Our public API intentionally exposes that looser surface, so we narrow only here.
-	return agent.model as never;
+function resolveModel(agent: Agent, defaults?: ClientDefaults) {
+	// Use the agent's model, or fall back to the client default. A string `provider/model` is
+	// constructed into a real provider via a single generic apiKey (see providers.ts); a
+	// LanguageModel instance is passed straight through. We narrow the AI SDK's loose surface here.
+	const model = agent.model ?? defaults?.model;
+	if (typeof model === 'string') return resolveModelString(model, defaults?.apiKey) as never;
+	return model as never;
 }
 
 function buildMessages(agent: Agent, params: RunParams): ModelMessage[] {
@@ -54,13 +59,17 @@ function buildTools(
 	return out;
 }
 
-export async function run(registry: Registry, params: RunParams): Promise<RunResult> {
+export async function run(
+	registry: Registry,
+	params: RunParams,
+	defaults?: ClientDefaults
+): Promise<RunResult> {
 	const agent = registry.resolveAgent(params.agent);
 	const messages = buildMessages(agent, params);
 	const tools = buildTools(registry, agent, params.context ?? {});
 
 	const result = await generateText({
-		model: resolveModel(agent),
+		model: resolveModel(agent, defaults),
 		messages,
 		tools,
 		temperature: params.temperature ?? agent.temperature,
@@ -93,14 +102,15 @@ export async function run(registry: Registry, params: RunParams): Promise<RunRes
 
 export async function* runStream(
 	registry: Registry,
-	params: RunParams
+	params: RunParams,
+	defaults?: ClientDefaults
 ): AsyncGenerator<StreamEvent, void, unknown> {
 	const agent = registry.resolveAgent(params.agent);
 	const messages = buildMessages(agent, params);
 	const tools = buildTools(registry, agent, params.context ?? {});
 
 	const result = streamText({
-		model: resolveModel(agent),
+		model: resolveModel(agent, defaults),
 		messages,
 		tools,
 		temperature: params.temperature ?? agent.temperature,
@@ -166,13 +176,14 @@ export async function* runStream(
  */
 export async function runObject<T>(
 	registry: Registry,
-	params: RunObjectParams<T>
+	params: RunObjectParams<T>,
+	defaults?: ClientDefaults
 ): Promise<RunObjectResult<T>> {
 	const agent = registry.resolveAgent(params.agent);
 	const messages = buildMessages(agent, params as unknown as RunParams);
 
 	const result = await generateObject({
-		model: resolveModel(agent),
+		model: resolveModel(agent, defaults),
 		messages,
 		schema: params.inputSchema,
 		schemaName: params.schemaName,

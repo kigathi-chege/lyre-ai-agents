@@ -39,11 +39,23 @@ export type Message =
 	| { role: 'user'; content: string }
 	| { role: 'assistant'; content: string };
 
+/**
+ * Client-level defaults applied to every run. `apiKey` is a single generic key the package uses
+ * to construct whichever provider a `provider/model` string names (see providers.ts), so consumers
+ * never import `@ai-sdk/*`. `model` is the default model when an agent doesn't specify one.
+ */
+export type ClientDefaults = { apiKey?: string; model?: ModelLike };
+
 export type AgentDefinition = {
 	/** Stable identifier; used as the lookup key. Defaults to `name`. */
 	id?: string;
 	name: string;
-	model: ModelLike;
+	/**
+	 * Model to use. A `provider/model` string (e.g. 'anthropic/claude-sonnet-4-5', 'openai/gpt-4o',
+	 * 'xai/grok-2-latest') is resolved to a provider using the client's generic `apiKey`; a
+	 * `LanguageModel` instance is used as-is. Optional — falls back to the client default model.
+	 */
+	model?: ModelLike;
 	/** System prompt. Inserted as a `system` message when no system message is in the history. */
 	instructions?: string;
 	temperature?: number;
@@ -62,8 +74,8 @@ export type AgentDefinition = {
 	metadata?: Record<string, any>;
 };
 
-export type Agent = Required<Pick<AgentDefinition, 'id' | 'name' | 'model' | 'instructions'>> &
-	Omit<AgentDefinition, 'id' | 'name' | 'model' | 'instructions'>;
+export type Agent = Required<Pick<AgentDefinition, 'id' | 'name' | 'instructions'>> &
+	Omit<AgentDefinition, 'id' | 'name' | 'instructions'>;
 
 export type RunParams = {
 	/** Agent id, name, or definition object. */
