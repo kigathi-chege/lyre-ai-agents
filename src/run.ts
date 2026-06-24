@@ -1,5 +1,5 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-import { generateObject, generateText, streamText, tool, type ModelMessage, type Tool } from 'ai';
+import { generateText, streamText, tool, Output, type ModelMessage, type Tool } from 'ai';
 import type { Registry } from './agents';
 import type {
 	ClientDefaults,
@@ -119,11 +119,26 @@ export async function* runStream(
 		providerOptions: agent.providerOptions
 	});
 
+	// Accumulate per-step usage as a fallback: in AI SDK v5/v6 the aggregate usage rides on the
+	// final `finish` part as `totalUsage`, while per-step usage rides on each `finish-step` part as
+	// `usage`. Some providers populate one but not the other, so we track both and prefer the
+	// aggregate.
+	const accumulatedUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+	const addUsage = (u: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined) => {
+		if (!u) return;
+		accumulatedUsage.inputTokens += u.inputTokens ?? 0;
+		accumulatedUsage.outputTokens += u.outputTokens ?? 0;
+		accumulatedUsage.totalTokens += u.totalTokens ?? 0;
+	};
+
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	for await (const part of result.fullStream as AsyncIterable<any>) {
 		switch (part.type) {
 			case 'text-delta':
 				yield { type: 'text-delta', text: part.text ?? part.delta ?? '' };
+				break;
+			case 'finish-step':
+				addUsage(part.usage);
 				break;
 			case 'tool-call':
 				yield {
@@ -149,17 +164,21 @@ export async function* runStream(
 					error: part.error
 				};
 				break;
-			case 'finish':
+			case 'finish': {
+				// AI SDK v5/v6 carries aggregate usage as `totalUsage` on the final finish part
+				// (older builds used `usage`); fall back to the per-step accumulation.
+				const finalUsage = part.totalUsage ?? part.usage;
 				yield {
 					type: 'finish',
 					finishReason: part.finishReason,
 					usage: {
-						inputTokens: part.usage?.inputTokens ?? 0,
-						outputTokens: part.usage?.outputTokens ?? 0,
-						totalTokens: part.usage?.totalTokens ?? 0
+						inputTokens: finalUsage?.inputTokens ?? accumulatedUsage.inputTokens,
+						outputTokens: finalUsage?.outputTokens ?? accumulatedUsage.outputTokens,
+						totalTokens: finalUsage?.totalTokens ?? accumulatedUsage.totalTokens
 					}
 				};
 				break;
+			}
 			case 'error':
 				yield { type: 'error', error: part.error };
 				break;
@@ -182,19 +201,23 @@ export async function runObject<T>(
 	const agent = registry.resolveAgent(params.agent);
 	const messages = buildMessages(agent, params as unknown as RunParams);
 
-	const result = await generateObject({
+	// AI SDK v6 deprecated `generateObject` in favor of `generateText` with an `output` spec.
+	// `Output.object` forces a schema-validated object; the result is exposed as `result.output`.
+	const result = await generateText({
 		model: resolveModel(agent, defaults),
 		messages,
-		schema: params.inputSchema,
-		schemaName: params.schemaName,
-		schemaDescription: params.schemaDescription,
+		output: Output.object({
+			schema: params.inputSchema,
+			name: params.schemaName,
+			description: params.schemaDescription
+		}),
 		temperature: params.temperature ?? agent.temperature,
 		maxOutputTokens: params.maxOutputTokens ?? agent.maxOutputTokens,
 		providerOptions: agent.providerOptions
 	} as never);
 
 	return {
-		object: result.object as T,
+		object: result.output as T,
 		finishReason: (result.finishReason as string) ?? 'stop',
 		usage: {
 			inputTokens: result.usage?.inputTokens ?? 0,
