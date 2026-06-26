@@ -18,6 +18,16 @@ const PROVIDERS: Record<string, ProviderFactory> = {
 	google: (apiKey, id) => createGoogleGenerativeAI({ apiKey })(id)
 };
 
+// Per-provider env key. Lets a SINGLE process serve agents on DIFFERENT providers at once (e.g. an
+// OpenAI agent and an Anthropic agent): each resolves its own key, falling back to the generic key
+// passed by the consumer. This is what makes multi-provider, DB-configured agents work.
+const PROVIDER_ENV: Record<string, string> = {
+	anthropic: 'ANTHROPIC_API_KEY',
+	openai: 'OPENAI_API_KEY',
+	xai: 'XAI_API_KEY',
+	google: 'GOOGLE_GENERATIVE_AI_API_KEY'
+};
+
 /** Provider prefixes this package can construct directly from a generic API key. */
 export const SUPPORTED_PROVIDERS = Object.keys(PROVIDERS);
 
@@ -35,6 +45,10 @@ export function resolveModelString(model: string, apiKey?: string): LanguageMode
 	const provider = model.slice(0, slash);
 	const modelId = model.slice(slash + 1);
 	const factory = PROVIDERS[provider];
-	if (factory && apiKey && modelId) return factory(apiKey, modelId);
+	if (!factory || !modelId) return model;
+	// Prefer the provider-specific env key; fall back to the generic key the consumer passed.
+	const envKey = typeof process !== 'undefined' ? process.env?.[PROVIDER_ENV[provider]] : undefined;
+	const key = envKey || apiKey;
+	if (key) return factory(key, modelId);
 	return model;
 }
