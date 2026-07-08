@@ -90,6 +90,26 @@ export type RunParams = {
 	temperature?: number;
 	/** Max number of tool-call iterations before bailing. Default 8. */
 	maxSteps?: number;
+	/**
+	 * Optional schema-constrained final output. When set, the run uses tools AND forces the model's
+	 * FINAL answer to be a JSON object matching this schema (AI SDK `Output.object`) — i.e. call tools,
+	 * read their results, then produce a validated object. The validated object is surfaced on the
+	 * `finish` stream event as `object` (and on `RunResult.object`). Generating the object counts as a
+	 * step, so keep `maxSteps` high enough for tool calls + the object step. Omit for free-text runs.
+	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	output?: { schema: z.ZodSchema<any>; name?: string; description?: string };
+	/**
+	 * Tool-selection policy for the FIRST step (AI SDK / OpenAI `tool_choice`):
+	 * - `'auto'` (default): the model decides whether to call a tool.
+	 * - `'required'`: the model MUST call a tool before it can answer — use this to force a data
+	 *   round-trip so the model can't fabricate an answer (e.g. a canvas with placeholder values).
+	 * - `'none'`: the model must not call tools.
+	 * - `{ toolName }`: force a specific tool.
+	 * Only the first step is constrained; later steps fall back to `auto` so the model can stop calling
+	 * tools and produce its final (optionally schema-constrained) answer.
+	 */
+	toolChoice?: 'auto' | 'required' | 'none' | { toolName: string };
 	/** Forwarded to tool `execute(input, context)`. */
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	context?: Record<string, any>;
@@ -105,6 +125,8 @@ export type RunResult = {
 	};
 	toolCalls: { toolCallId: string; toolName: string; input: unknown }[];
 	toolResults: { toolCallId: string; toolName: string; output: unknown }[];
+	/** The schema-validated final object, present only when the run was given `output`. */
+	object?: unknown;
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	raw: any;
 };
@@ -118,6 +140,8 @@ export type StreamEvent =
 			type: 'finish';
 			finishReason: string;
 			usage: { inputTokens: number; outputTokens: number; totalTokens: number };
+			/** The schema-validated final object, present only when the run was given `output`. */
+			object?: unknown;
 	  }
 	| { type: 'error'; error: unknown };
 

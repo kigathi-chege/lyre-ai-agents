@@ -59,6 +59,31 @@ function buildTools(
 	return out;
 }
 
+// Options shared by `run` and `runStream` that depend on RunParams: the schema-constrained `output`
+// spec and the first-step `toolChoice`. Factored out so both entry points behave identically.
+function buildRunOptions(params: RunParams): Record<string, unknown> {
+	const opts: Record<string, unknown> = {};
+
+	if (params.output) {
+		opts.output = Output.object({
+			schema: params.output.schema,
+			name: params.output.name,
+			description: params.output.description
+		});
+	}
+
+	// `toolChoice` constrains ONLY the first step. If it forced a tool on every step the model could
+	// never stop to answer, so from step 2 onward we return to `auto` (or `none` if the final schema
+	// object shouldn't call tools — but `auto` lets the model keep gathering if it needs to).
+	if (params.toolChoice && params.toolChoice !== 'auto') {
+		opts.toolChoice = params.toolChoice;
+		opts.prepareStep = ({ stepNumber }: { stepNumber: number }) =>
+			stepNumber === 0 ? { toolChoice: params.toolChoice } : { toolChoice: 'auto' };
+	}
+
+	return opts;
+}
+
 export async function run(
 	registry: Registry,
 	params: RunParams,
@@ -68,15 +93,19 @@ export async function run(
 	const messages = buildMessages(agent, params);
 	const tools = buildTools(registry, agent, params.context ?? {});
 
+	// Same as runStream: `output` forces a schema-valid final object; `toolChoice` can force the first
+	// step to call a tool. Both come from buildRunOptions so the two entry points stay identical.
 	const result = await generateText({
 		model: resolveModel(agent, defaults),
 		messages,
 		tools,
+		...buildRunOptions(params),
 		temperature: params.temperature ?? agent.temperature,
 		maxOutputTokens: params.maxOutputTokens ?? agent.maxOutputTokens,
-		stopWhen: ({ steps }) => steps.length >= (params.maxSteps ?? 8),
+		stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
+			steps.length >= (params.maxSteps ?? 8),
 		providerOptions: agent.providerOptions
-	});
+	} as never);
 
 	return {
 		text: result.text,
@@ -96,6 +125,9 @@ export async function run(
 			toolName: r.toolName,
 			output: (r as { output: unknown }).output
 		})),
+		...(params.output
+			? { object: (result as unknown as { experimental_output?: unknown }).experimental_output }
+			: {}),
 		raw: result
 	};
 }
@@ -109,15 +141,22 @@ export async function* runStream(
 	const messages = buildMessages(agent, params);
 	const tools = buildTools(registry, agent, params.context ?? {});
 
+	// When `output` is given, force the FINAL answer to be a schema-valid object WHILE still allowing
+	// tool calls (AI SDK: pass `tools` and `Output.object` together). The model calls tools, reads the
+	// results across steps, then emits the validated object as its last step. Without `output` the run
+	// is free-text (unchanged). The object generation is itself a step, so `stopWhen`/`maxSteps` must
+	// leave room for it beyond the tool iterations.
 	const result = streamText({
 		model: resolveModel(agent, defaults),
 		messages,
 		tools,
+		...buildRunOptions(params),
 		temperature: params.temperature ?? agent.temperature,
 		maxOutputTokens: params.maxOutputTokens ?? agent.maxOutputTokens,
-		stopWhen: ({ steps }) => steps.length >= (params.maxSteps ?? 8),
+		stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
+			steps.length >= (params.maxSteps ?? 8),
 		providerOptions: agent.providerOptions
-	});
+	} as never);
 
 	// Accumulate per-step usage as a fallback: in AI SDK v5/v6 the aggregate usage rides on the
 	// final `finish` part as `totalUsage`, while per-step usage rides on each `finish-step` part as
@@ -168,6 +207,15 @@ export async function* runStream(
 				// AI SDK v5/v6 carries aggregate usage as `totalUsage` on the final finish part
 				// (older builds used `usage`); fall back to the per-step accumulation.
 				const finalUsage = part.totalUsage ?? part.usage;
+				// When `output` was requested, the AI SDK resolves the schema-validated object on the
+				// stream result (`experimental_output`). Await it here so consumers get the parsed object
+				// on the finish event instead of re-parsing raw text. Best-effort: a validation failure
+				// throws, which we surface as an `error` event below via the outer iterator.
+				let object: unknown;
+				if (params.output) {
+					object = await (result as unknown as { experimental_output?: Promise<unknown> })
+						.experimental_output;
+				}
 				yield {
 					type: 'finish',
 					finishReason: part.finishReason,
@@ -175,7 +223,8 @@ export async function* runStream(
 						inputTokens: finalUsage?.inputTokens ?? accumulatedUsage.inputTokens,
 						outputTokens: finalUsage?.outputTokens ?? accumulatedUsage.outputTokens,
 						totalTokens: finalUsage?.totalTokens ?? accumulatedUsage.totalTokens
-					}
+					},
+					...(params.output ? { object } : {})
 				};
 				break;
 			}
