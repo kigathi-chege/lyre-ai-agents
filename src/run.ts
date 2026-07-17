@@ -13,6 +13,20 @@ import type {
 	ToolDefinition
 } from './types';
 import { resolveModelString } from './providers';
+import { ensureRemoteAgent, reportRun, buildProxyTool } from './remote';
+
+// Resolve the agent, fetching it from the remote source when it's a string not registered locally and a
+// remote base URL is configured. Falls through to the normal (throwing) resolveAgent otherwise.
+async function resolveAgentMaybeRemote(
+	registry: Registry,
+	agentInput: RunParams['agent'],
+	defaults?: ClientDefaults
+): Promise<Agent> {
+	if (typeof agentInput === 'string' && defaults?.remoteBaseUrl && !registry.hasAgent(agentInput)) {
+		await ensureRemoteAgent(registry, agentInput, defaults);
+	}
+	return registry.resolveAgent(agentInput);
+}
 
 function resolveModel(agent: Agent, defaults?: ClientDefaults) {
 	// Use the agent's model, or fall back to the client default. A string `provider/model` is
@@ -56,6 +70,14 @@ function buildTools(
 				def.execute(input, { toolCallId: opts.toolCallId, app: context })
 		});
 	}
+	// Materialize remote proxy tools this agent may use, binding each to the run's CONTEXT so the tool call
+	// forwarded to the source carries the run scope (needed to resolve the source's built-in tools). When the
+	// agent names tools, only the named proxy tools are included; otherwise all (matches resolveTools).
+	const allowed = agent.tools && agent.tools.length > 0 ? new Set(agent.tools) : null;
+	for (const [name, spec] of registry.proxyTools) {
+		if (allowed && !allowed.has(name)) continue;
+		if (!out[name]) out[name] = buildProxyTool(spec, context);
+	}
 	return out;
 }
 
@@ -89,7 +111,8 @@ export async function run(
 	params: RunParams,
 	defaults?: ClientDefaults
 ): Promise<RunResult> {
-	const agent = registry.resolveAgent(params.agent);
+	const startedAt = Date.now();
+	const agent = await resolveAgentMaybeRemote(registry, params.agent, defaults);
 	const messages = buildMessages(agent, params);
 	const tools = buildTools(registry, agent, params.context ?? {});
 
@@ -107,7 +130,7 @@ export async function run(
 		providerOptions: agent.providerOptions
 	} as never);
 
-	return {
+	const runResult: RunResult = {
 		text: result.text,
 		finishReason: result.finishReason as string,
 		usage: {
@@ -130,6 +153,38 @@ export async function run(
 			: {}),
 		raw: result
 	};
+
+	// Report the run back to the remote source (best-effort; skipped when no remote configured).
+	void reportRun(defaults ?? {}, buildRunReport(agent, params, runResult, true, null, startedAt));
+	return runResult;
+}
+
+// Map a finished run to the source's /runs ingest shape. `agent.name` is the slug. Cost is NOT sent — the
+// source derives it from model + tokens. `raw` is never sent.
+function buildRunReport(
+	agent: Agent,
+	params: RunParams,
+	result: Pick<RunResult, 'text' | 'usage' | 'toolCalls' | 'toolResults' | 'object'> & { finishReason?: string },
+	ok: boolean,
+	error: string | null,
+	startedAt: number
+): Record<string, unknown> {
+	return {
+		operation: 'agent_ask',
+		agentSlug: agent.name,
+		model: typeof agent.model === 'string' ? agent.model : null,
+		question: params.message ?? null,
+		requestPayload: { message: params.message ?? null, context: params.context ?? null },
+		responsePayload: { text: result.text, object: result.object ?? null, finishReason: result.finishReason ?? null },
+		toolCalls: result.toolCalls,
+		toolResults: result.toolResults,
+		inputTokens: result.usage.inputTokens,
+		outputTokens: result.usage.outputTokens,
+		totalTokens: result.usage.totalTokens,
+		latencyMs: Date.now() - startedAt,
+		ok,
+		error
+	};
 }
 
 export async function* runStream(
@@ -137,9 +192,16 @@ export async function* runStream(
 	params: RunParams,
 	defaults?: ClientDefaults
 ): AsyncGenerator<StreamEvent, void, unknown> {
-	const agent = registry.resolveAgent(params.agent);
+	const startedAt = Date.now();
+	const agent = await resolveAgentMaybeRemote(registry, params.agent, defaults);
 	const messages = buildMessages(agent, params);
 	const tools = buildTools(registry, agent, params.context ?? {});
+
+	// Accumulate for the run report (best-effort report on finish/error).
+	let reportText = '';
+	let reportObject: unknown;
+	const reportToolCalls: { toolCallId: string; toolName: string; input: unknown }[] = [];
+	const reportToolResults: { toolCallId: string; toolName: string; output: unknown }[] = [];
 
 	// When `output` is given, force the FINAL answer to be a schema-valid object WHILE still allowing
 	// tool calls (AI SDK: pass `tools` and `Output.object` together). The model calls tools, reads the
@@ -173,13 +235,17 @@ export async function* runStream(
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	for await (const part of result.fullStream as AsyncIterable<any>) {
 		switch (part.type) {
-			case 'text-delta':
-				yield { type: 'text-delta', text: part.text ?? part.delta ?? '' };
+			case 'text-delta': {
+				const t = part.text ?? part.delta ?? '';
+				reportText += t;
+				yield { type: 'text-delta', text: t };
 				break;
+			}
 			case 'finish-step':
 				addUsage(part.usage);
 				break;
 			case 'tool-call':
+				reportToolCalls.push({ toolCallId: part.toolCallId, toolName: part.toolName, input: part.input ?? part.args });
 				yield {
 					type: 'tool-call',
 					toolCallId: part.toolCallId,
@@ -188,6 +254,7 @@ export async function* runStream(
 				};
 				break;
 			case 'tool-result':
+				reportToolResults.push({ toolCallId: part.toolCallId, toolName: part.toolName, output: part.output ?? part.result });
 				yield {
 					type: 'tool-result',
 					toolCallId: part.toolCallId,
@@ -216,19 +283,43 @@ export async function* runStream(
 					object = await (result as unknown as { experimental_output?: Promise<unknown> })
 						.experimental_output;
 				}
+				reportObject = object;
+				const usage = {
+					inputTokens: finalUsage?.inputTokens ?? accumulatedUsage.inputTokens,
+					outputTokens: finalUsage?.outputTokens ?? accumulatedUsage.outputTokens,
+					totalTokens: finalUsage?.totalTokens ?? accumulatedUsage.totalTokens
+				};
+				void reportRun(
+					defaults ?? {},
+					buildRunReport(
+						agent,
+						params,
+						{ text: reportText, usage, toolCalls: reportToolCalls, toolResults: reportToolResults, object: reportObject, finishReason: part.finishReason },
+						true,
+						null,
+						startedAt
+					)
+				);
 				yield {
 					type: 'finish',
 					finishReason: part.finishReason,
-					usage: {
-						inputTokens: finalUsage?.inputTokens ?? accumulatedUsage.inputTokens,
-						outputTokens: finalUsage?.outputTokens ?? accumulatedUsage.outputTokens,
-						totalTokens: finalUsage?.totalTokens ?? accumulatedUsage.totalTokens
-					},
+					usage,
 					...(params.output ? { object } : {})
 				};
 				break;
 			}
 			case 'error':
+				void reportRun(
+					defaults ?? {},
+					buildRunReport(
+						agent,
+						params,
+						{ text: reportText, usage: accumulatedUsage, toolCalls: reportToolCalls, toolResults: reportToolResults, object: reportObject },
+						false,
+						part.error instanceof Error ? part.error.message : String(part.error),
+						startedAt
+					)
+				);
 				yield { type: 'error', error: part.error };
 				break;
 			// Silently drop other chunk types (start/step boundaries, raw text accumulators, etc.).

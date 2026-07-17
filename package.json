@@ -1,6 +1,6 @@
 {
   "name": "@~lyre/ai-agents",
-  "version": "0.5.1",
+  "version": "0.5.4",
   "description": "Multi-provider AI agents SDK for SvelteKit + Node. Thin agent/tool/run/runStream surface over the Vercel AI SDK — OpenAI, Anthropic, Google Gemini, Mistral, Cohere. Zod-typed tools, full streaming event surface, optional HTML sanitizer.",
   "type": "module",
   "sideEffects": false,

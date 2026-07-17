@@ -22,7 +22,12 @@ export class AiAgentsClient {
 
 	constructor(config?: ClientDefaults) {
 		this.registry = new Registry();
-		this.defaults = { apiKey: config?.apiKey, model: config?.model };
+		this.defaults = {
+			apiKey: config?.apiKey,
+			model: config?.model,
+			remoteBaseUrl: config?.remoteBaseUrl,
+			remoteToken: config?.remoteToken
+		};
 	}
 
 	registerTool<I, O>(tool: ToolDefinition<I, O>): ToolDefinition<I, O> {

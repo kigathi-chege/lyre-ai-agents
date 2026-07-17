@@ -44,7 +44,41 @@ export type Message =
  * to construct whichever provider a `provider/model` string names (see providers.ts), so consumers
  * never import `@ai-sdk/*`. `model` is the default model when an agent doesn't specify one.
  */
-export type ClientDefaults = { apiKey?: string; model?: ModelLike };
+export type ClientDefaults = {
+	apiKey?: string;
+	model?: ModelLike;
+	/**
+	 * Remote agent source (e.g. Axis Intelligence). When set, a run for an agent NOT registered locally
+	 * fetches its definition from `${remoteBaseUrl}/agents/{slug}/definition`, runs it locally against the
+	 * provider, and reports the result to `${remoteBaseUrl}/runs`. Tools the definition names that aren't
+	 * registered locally become proxy tools that POST to `${remoteBaseUrl}/tools/{slug}/call`.
+	 */
+	remoteBaseUrl?: string;
+	/** Bearer token (service key) sent to the remote source for fetch/proxy/report calls. */
+	remoteToken?: string;
+};
+
+/** A tool spec carried by a remote agent definition (name-only for built-ins; schema for apiTools). */
+export type RemoteToolSpec = {
+	name: string;
+	description?: string | null;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	inputSchema?: any;
+	/** The slug the consumer POSTs to `${remoteBaseUrl}/tools/{proxySlug}/call`. Null for built-ins. */
+	proxySlug?: string | null;
+};
+
+/** A registered remote proxy tool — materialized (with the run's context) into an AI-SDK tool at run time
+ *  in buildTools, so the tool call sent to the source carries the run's scope (appId/tenantId/etc.). */
+export type ProxyToolSpec = {
+	name: string;
+	description: string;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	inputSchema: any;
+	proxySlug: string;
+	base: string;
+	headers: Record<string, string>;
+};
 
 export type AgentDefinition = {
 	/** Stable identifier; used as the lookup key. Defaults to `name`. */

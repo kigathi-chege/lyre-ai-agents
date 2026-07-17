@@ -8,6 +8,8 @@ export { sanitizeRichHtml } from './sanitize';
 // Types
 export type {
 	ClientDefaults,
+	RemoteToolSpec,
+	ProxyToolSpec,
 	ModelId,
 	ModelLike,
 	Message,

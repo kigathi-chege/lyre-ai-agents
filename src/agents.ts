@@ -1,15 +1,33 @@
-import type { Agent, AgentDefinition, ToolDefinition } from './types';
+import type { Agent, AgentDefinition, ProxyToolSpec, ToolDefinition } from './types';
 
 /**
  * In-memory registry of agents and tools. One per `Client`.
  */
 export class Registry {
 	readonly tools = new Map<string, ToolDefinition>();
+	// Remote proxy tool specs — materialized into AI-SDK tools at run time in buildTools, so each call can
+	// fold the run's CONTEXT (scope: appId/tenantId/targetApps/…) into the request sent to the source.
+	readonly proxyTools = new Map<string, ProxyToolSpec>();
 	readonly agents = new Map<string, Agent>();
 
 	registerTool<I, O>(tool: ToolDefinition<I, O>): ToolDefinition<I, O> {
 		this.tools.set(tool.name, tool as unknown as ToolDefinition);
 		return tool;
+	}
+
+	/** Register a remote proxy tool spec by name (materialized with run context in buildTools). */
+	registerProxyTool(spec: ProxyToolSpec): void {
+		this.proxyTools.set(spec.name, spec);
+	}
+
+	/** True if a tool with this name is registered (either shape). */
+	hasTool(name: string): boolean {
+		return this.tools.has(name) || this.proxyTools.has(name);
+	}
+
+	/** True if an agent with this id/name is registered. */
+	hasAgent(idOrName: string): boolean {
+		return this.agents.has(idOrName);
 	}
 
 	createAgent(definition: AgentDefinition): Agent {
